@@ -17,11 +17,17 @@ Comandos no Telegram:
 """
 
 import logging
+import os
 import re
 import sqlite3
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from telegram import Update
 from telegram.ext import (
@@ -33,7 +39,9 @@ from telegram.ext import (
 )
 
 # ======================= CONFIGURAÇÃO =======================
-TOKEN = "8736752766:AAF7G_6N28fk2Z9b7BRGayikl90Ie9f9lZ0"          # pegue no @BotFather
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+if not TOKEN:
+    sys.exit("Erro: defina TELEGRAM_TOKEN no arquivo .env")
 DB_PATH = Path(__file__).parent / "financas.db"
 USAR_IA = False                         # True = usa Ollama local (veja parse_com_ia)
 OLLAMA_MODELO = "llama3.2"
