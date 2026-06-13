@@ -1,0 +1,281 @@
+"""
+Porquim Pessoal — bot de finanças no Telegram
+================================================
+Registra gastos por mensagem ("gasolina 150", "mercado 127,50 no nubank")
+e gera relatórios por categoria. Tudo local: dados num SQLite no seu disco.
+
+Como rodar:
+    pip install python-telegram-bot
+    # cole seu token (do @BotFather) em TOKEN abaixo
+    python bot.py
+
+Comandos no Telegram:
+    (qualquer mensagem)  -> registra um gasto
+    /relatorio           -> resumo do mês atual por categoria
+    /resumo              -> total geral
+    /ajuda               -> como usar
+"""
+
+import logging
+import re
+import sqlite3
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+# ======================= CONFIGURAÇÃO =======================
+TOKEN = "8736752766:AAF7G_6N28fk2Z9b7BRGayikl90Ie9f9lZ0"          # pegue no @BotFather
+DB_PATH = Path(__file__).parent / "financas.db"
+USAR_IA = False                         # True = usa Ollama local (veja parse_com_ia)
+OLLAMA_MODELO = "llama3.2"
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+log = logging.getLogger(__name__)
+
+# ======================= CATEGORIAS =======================
+# Palavra-chave -> categoria. Ajuste à sua realidade.
+CATEGORIAS = {
+    "Alimentação": ["mercado", "comida", "lanche", "misto", "almoço", "almoco",
+                    "jantar", "ifood", "restaurante", "padaria", "açougue",
+                    "pizza", "hamburguer", "hamburger", "café", "cafe", "feira"],
+    "Transporte":  ["gasolina", "combustível", "combustivel", "uber", "99",
+                    "ônibus", "onibus", "metrô", "metro", "estacionamento",
+                    "pedágio", "pedagio", "etanol", "alcool"],
+    "Moradia":     ["aluguel", "luz", "água", "agua", "internet", "condomínio",
+                    "condominio", "gás", "gas", "energia"],
+    "Pets":        ["ração", "racao", "veterinário", "veterinario", "pet"],
+    "Saúde":       ["farmácia", "farmacia", "remédio", "remedio", "médico",
+                    "medico", "academia", "dentista"],
+    "Lazer":       ["cinema", "netflix", "spotify", "jogo", "bar", "cerveja",
+                    "show", "viagem"],
+    "Compras":     ["roupa", "tênis", "tenis", "shopping", "presente", "amazon", "mercadolivre", "mercado livre", "eletrônico", "eletronico", "shopee"],
+    "Investimentos": ["investimento", "ação", "ações", "acoes", "acao", "fundo",
+                      "tesouro", "cdb", "lci", "lca", "poupança", "poupanca",
+                      "cripto", "bitcoin", "btc", "aporte", "previdência",
+                      "previdencia"],
+}
+
+# Meios de pagamento reconhecidos no texto.
+MEIOS = ["nubank", "itaú", "itau", "inter", "pix", "dinheiro", "crédito",
+         "credito", "débito", "debito", "caixa", "bradesco", "santander",
+         "cora", "picpay"]
+
+EMOJI_CAT = {
+    "Alimentação": "🍔", "Transporte": "🚗", "Moradia": "🏠", "Pets": "🐾",
+    "Saúde": "💊", "Lazer": "🎮", "Compras": "🛍️", "Investimentos": "📈", "Outros": "📦",
+}
+
+
+# ======================= BANCO DE DADOS =======================
+def init_db() -> None:
+    con = sqlite3.connect(DB_PATH)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS gastos (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id   INTEGER,
+            data      TEXT,
+            descricao TEXT,
+            categoria TEXT,
+            meio      TEXT,
+            valor     REAL,
+            codigo    TEXT,
+            criado_em TEXT
+        )
+    """)
+    con.commit()
+    con.close()
+
+
+def salvar_gasto(user_id, descricao, categoria, meio, valor) -> str:
+    codigo = uuid.uuid4().hex[:6]
+    agora = datetime.now()
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT INTO gastos (user_id, data, descricao, categoria, meio, valor, codigo, criado_em) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (user_id, agora.strftime("%d/%m/%Y"), descricao, categoria, meio,
+         valor, codigo, agora.isoformat()),
+    )
+    con.commit()
+    con.close()
+    return codigo
+
+
+def relatorio_mes(user_id):
+    mes = datetime.now().strftime("%m/%Y")
+    con = sqlite3.connect(DB_PATH)
+    cur = con.execute(
+        "SELECT categoria, SUM(valor) FROM gastos "
+        "WHERE user_id=? AND substr(data,4) = ? GROUP BY categoria ORDER BY 2 DESC",
+        (user_id, mes),
+    )
+    linhas = cur.fetchall()
+    con.close()
+    return linhas
+
+
+def total_geral(user_id):
+    con = sqlite3.connect(DB_PATH)
+    cur = con.execute("SELECT SUM(valor) FROM gastos WHERE user_id=?", (user_id,))
+    total = cur.fetchone()[0] or 0
+    con.close()
+    return total
+
+
+# ======================= PARSER (regex) =======================
+def extrair_valor(texto: str):
+    """Pega o maior número da mensagem como valor (heurística simples)."""
+    achados = re.findall(r"\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2}|\d+(?:\.\d+)?", texto)
+    valores = []
+    for a in achados:
+        if "," in a:                       # formato BR: 1.234,56 ou 19,90
+            a = a.replace(".", "").replace(",", ".")
+        valores.append(float(a))
+    return max(valores) if valores else None
+
+
+def detectar(texto: str, mapa) -> str | None:
+    t = texto.lower()
+    for chave, palavras in (mapa.items() if isinstance(mapa, dict) else [(m, [m]) for m in mapa]):
+        for p in palavras:
+            if p in t:
+                return chave
+    return None
+
+
+def parse_regex(texto: str) -> dict | None:
+    valor = extrair_valor(texto)
+    if valor is None:
+        return None
+    categoria = detectar(texto, CATEGORIAS) or "Outros"
+    meio = detectar(texto, MEIOS) or "Não informado"
+    # descrição = texto sem o número e sem ruído comum
+    desc = re.sub(r"\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2}|\d+(?:\.\d+)?", "", texto)
+    desc = re.sub(r"\b(no|na|com|de|do|da|r\$|reais?|cart[ãa]o)\b", "", desc, flags=re.I)
+    desc = " ".join(desc.split()).strip(" ,.-").capitalize() or categoria
+    return {"valor": valor, "categoria": categoria, "meio": meio.title(), "descricao": desc}
+
+
+def parse_com_ia(texto: str) -> dict | None:
+    """Usa Ollama local pra entender a frase. Requer 'ollama serve' rodando."""
+    import json
+    import requests
+    prompt = (
+        "Extraia de uma mensagem de gasto e responda SÓ em JSON, sem texto extra:\n"
+        '{"valor": float, "categoria": str, "meio": str, "descricao": str}\n'
+        f"Categorias possíveis: {list(CATEGORIAS) + ['Outros']}.\n"
+        f"Mensagem: {texto}"
+    )
+    try:
+        r = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": OLLAMA_MODELO, "prompt": prompt, "stream": False, "format": "json"},
+            timeout=30,
+        )
+        return json.loads(r.json()["response"])
+    except Exception as e:
+        log.warning("IA falhou (%s), usando regex.", e)
+        return parse_regex(texto)
+
+
+def parse(texto: str) -> dict | None:
+    return parse_com_ia(texto) if USAR_IA else parse_regex(texto)
+
+
+# ======================= HANDLERS =======================
+async def start(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🐷 *Porquim Pessoal* ativado!\n\n"
+        "Me manda seus gastos do jeito que vier:\n"
+        "• `gasolina 150`\n"
+        "• `mercado 127,50 no nubank`\n"
+        "• `misto quente 19`\n\n"
+        "Comandos: /relatorio  /resumo  /ajuda",
+        parse_mode="Markdown",
+    )
+
+
+async def ajuda(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "É só me dizer o que gastou: *descrição + valor* (e o cartão, se quiser).\n"
+        "Eu identifico a categoria e guardo tudo.\n\n"
+        "/relatorio — gastos do mês por categoria\n"
+        "/resumo — total geral registrado",
+        parse_mode="Markdown",
+    )
+
+
+async def registrar(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    dados = parse(update.message.text)
+    if not dados or not dados.get("valor"):
+        await update.message.reply_text(
+            "🤔 Não achei um valor nessa mensagem. Tenta tipo: `mercado 50`",
+            parse_mode="Markdown",
+        )
+        return
+    codigo = salvar_gasto(
+        update.effective_user.id, dados["descricao"], dados["categoria"],
+        dados["meio"], dados["valor"],
+    )
+    emoji = EMOJI_CAT.get(dados["categoria"], "📦")
+    await update.message.reply_text(
+        f"✅ *Gasto Registrado!*\n"
+        f"{emoji} {dados['descricao']} ({dados['categoria']})\n"
+        f"💰 R$ {dados['valor']:.2f}".replace(".", ",") + "\n"
+        f"💳 {dados['meio']}\n"
+        f"📅 {datetime.now():%d/%m/%Y} — #{codigo}",
+        parse_mode="Markdown",
+    )
+
+
+async def relatorio(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    linhas = relatorio_mes(update.effective_user.id)
+    if not linhas:
+        await update.message.reply_text("Nenhum gasto registrado neste mês ainda. 🐷")
+        return
+    total = sum(v for _, v in linhas)
+    corpo = "\n".join(
+        f"{EMOJI_CAT.get(cat, '📦')} {cat} → R$ {val:.2f}".replace(".", ",")
+        for cat, val in linhas
+    )
+    await update.message.reply_text(
+        f"📊 *Relatório de {datetime.now():%m/%Y}*\n\n{corpo}\n\n"
+        f"💵 *Total: R$ {total:.2f}*".replace(".", ","),
+        parse_mode="Markdown",
+    )
+
+
+async def resumo(update: Update, _: ContextTypes.DEFAULT_TYPE):
+    total = total_geral(update.effective_user.id)
+    await update.message.reply_text(
+        f"💵 Total geral registrado: *R$ {total:.2f}*".replace(".", ","),
+        parse_mode="Markdown",
+    )
+
+
+def main():
+    init_db()
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ajuda", ajuda))
+    app.add_handler(CommandHandler("relatorio", relatorio))
+    app.add_handler(CommandHandler("resumo", resumo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, registrar))
+    log.info("Bot rodando. Ctrl+C para parar.")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
