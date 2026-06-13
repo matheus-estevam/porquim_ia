@@ -43,8 +43,7 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TOKEN:
     sys.exit("Erro: defina TELEGRAM_TOKEN no arquivo .env")
 DB_PATH = Path(__file__).parent / "financas.db"
-USAR_IA = False                         # True = usa Ollama local (veja parse_com_ia)
-OLLAMA_MODELO = "llama3.2"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -176,30 +175,32 @@ def parse_regex(texto: str) -> dict | None:
     return {"valor": valor, "categoria": categoria, "meio": meio.title(), "descricao": desc}
 
 
-def parse_com_ia(texto: str) -> dict | None:
-    """Usa Ollama local pra entender a frase. Requer 'ollama serve' rodando."""
+def parse_com_gemini(texto: str) -> dict | None:
+    """Usa Gemini para categorizar. Cai no regex se a API falhar ou não estiver configurada."""
+    if not GEMINI_API_KEY:
+        return parse_regex(texto)
     import json
-    import requests
+    import google.generativeai as genai
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("gemini-1.5-flash")
     prompt = (
-        "Extraia de uma mensagem de gasto e responda SÓ em JSON, sem texto extra:\n"
+        "Extraia informações de gasto da mensagem e responda APENAS em JSON válido, sem texto extra:\n"
         '{"valor": float, "categoria": str, "meio": str, "descricao": str}\n'
         f"Categorias possíveis: {list(CATEGORIAS) + ['Outros']}.\n"
+        f"Meios possíveis: {MEIOS + ['Não informado']}.\n"
         f"Mensagem: {texto}"
     )
     try:
-        r = requests.post(
-            "http://localhost:11434/api/generate",
-            json={"model": OLLAMA_MODELO, "prompt": prompt, "stream": False, "format": "json"},
-            timeout=30,
-        )
-        return json.loads(r.json()["response"])
+        resposta = model.generate_content(prompt)
+        txt = re.sub(r"```(?:json)?\n?", "", resposta.text).strip("`").strip()
+        return json.loads(txt)
     except Exception as e:
-        log.warning("IA falhou (%s), usando regex.", e)
+        log.warning("Gemini falhou (%s), usando categorias locais.", e)
         return parse_regex(texto)
 
 
 def parse(texto: str) -> dict | None:
-    return parse_com_ia(texto) if USAR_IA else parse_regex(texto)
+    return parse_com_gemini(texto)
 
 
 # ======================= HANDLERS =======================
