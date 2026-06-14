@@ -48,7 +48,8 @@ DB_PATH = Path(__file__).parent / "financas.db"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")   # Postgres (Neon) em produção; SQLite local se vazio
 if DATABASE_URL:
-    DATABASE_URL = DATABASE_URL.strip().strip('"').strip("'")  # remove aspas/espaços coladas por engano
+    # Um URI válido não tem espaços; remove aspas e qualquer espaço/quebra de linha colada por engano.
+    DATABASE_URL = "".join(DATABASE_URL.strip().strip('"').strip("'").split())
 USA_PG = bool(DATABASE_URL)
 PH = "%s" if USA_PG else "?"               # placeholder do driver (Postgres usa %s, SQLite usa ?)
 
@@ -97,7 +98,17 @@ def conectar():
     """Abre uma conexão: Postgres (Neon) em produção, SQLite localmente."""
     if USA_PG:
         import psycopg2
-        return psycopg2.connect(DATABASE_URL)
+        from urllib.parse import parse_qs, urlparse
+        u = urlparse(DATABASE_URL)
+        params = parse_qs(u.query)
+        return psycopg2.connect(
+            host=u.hostname,
+            port=u.port or 5432,
+            user=u.username,
+            password=u.password,
+            dbname=u.path.lstrip("/"),
+            sslmode=params.get("sslmode", ["require"])[0],
+        )
     return sqlite3.connect(DB_PATH)
 
 
