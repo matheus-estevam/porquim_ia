@@ -46,6 +46,9 @@ if not TOKEN:
     sys.exit("Erro: defina TELEGRAM_TOKEN no arquivo .env")
 DB_PATH = Path(__file__).parent / "financas.db"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+DATABASE_URL = os.getenv("DATABASE_URL")   # Postgres (Neon) em produção; SQLite local se vazio
+USA_PG = bool(DATABASE_URL)
+PH = "%s" if USA_PG else "?"               # placeholder do driver (Postgres usa %s, SQLite usa ?)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -88,12 +91,22 @@ EMOJI_CAT = {
 
 
 # ======================= BANCO DE DADOS =======================
+def conectar():
+    """Abre uma conexão: Postgres (Neon) em produção, SQLite localmente."""
+    if USA_PG:
+        import psycopg2
+        return psycopg2.connect(DATABASE_URL)
+    return sqlite3.connect(DB_PATH)
+
+
 def init_db() -> None:
-    con = sqlite3.connect(DB_PATH)
-    con.execute("""
+    id_col = "SERIAL PRIMARY KEY" if USA_PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    con = conectar()
+    cur = con.cursor()
+    cur.execute(f"""
         CREATE TABLE IF NOT EXISTS gastos (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id   INTEGER,
+            id        {id_col},
+            user_id   BIGINT,
             data      TEXT,
             descricao TEXT,
             categoria TEXT,
@@ -110,10 +123,11 @@ def init_db() -> None:
 def salvar_gasto(user_id, descricao, categoria, meio, valor) -> str:
     codigo = uuid.uuid4().hex[:6]
     agora = datetime.now()
-    con = sqlite3.connect(DB_PATH)
-    con.execute(
+    con = conectar()
+    cur = con.cursor()
+    cur.execute(
         "INSERT INTO gastos (user_id, data, descricao, categoria, meio, valor, codigo, criado_em) "
-        "VALUES (?,?,?,?,?,?,?,?)",
+        f"VALUES ({PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH})",
         (user_id, agora.strftime("%d/%m/%Y"), descricao, categoria, meio,
          valor, codigo, agora.isoformat()),
     )
@@ -124,10 +138,11 @@ def salvar_gasto(user_id, descricao, categoria, meio, valor) -> str:
 
 def relatorio_mes(user_id):
     mes = datetime.now().strftime("%m/%Y")
-    con = sqlite3.connect(DB_PATH)
-    cur = con.execute(
+    con = conectar()
+    cur = con.cursor()
+    cur.execute(
         "SELECT categoria, SUM(valor) FROM gastos "
-        "WHERE user_id=? AND substr(data,4) = ? GROUP BY categoria ORDER BY 2 DESC",
+        f"WHERE user_id={PH} AND substr(data,4) = {PH} GROUP BY categoria ORDER BY 2 DESC",
         (user_id, mes),
     )
     linhas = cur.fetchall()
@@ -136,8 +151,9 @@ def relatorio_mes(user_id):
 
 
 def total_geral(user_id):
-    con = sqlite3.connect(DB_PATH)
-    cur = con.execute("SELECT SUM(valor) FROM gastos WHERE user_id=?", (user_id,))
+    con = conectar()
+    cur = con.cursor()
+    cur.execute(f"SELECT SUM(valor) FROM gastos WHERE user_id={PH}", (user_id,))
     total = cur.fetchone()[0] or 0
     con.close()
     return total
