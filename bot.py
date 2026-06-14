@@ -328,13 +328,6 @@ def iniciar_keepalive():
 
 
 def main():
-    if USA_PG:
-        from urllib.parse import urlparse
-        u = urlparse(DATABASE_URL)
-        log.info(
-            "DATABASE_URL detectada: scheme=%r host=%r user=%r db=%r (tamanho=%d)",
-            u.scheme, u.hostname, u.username, u.path.lstrip("/"), len(DATABASE_URL),
-        )
     init_db()
     iniciar_keepalive()
     app = Application.builder().token(TOKEN).build()
