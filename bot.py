@@ -21,8 +21,10 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import uuid
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -274,8 +276,31 @@ async def resumo(update: Update, _: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ======================= KEEP-ALIVE (Render) =======================
+class _HealthHandler(BaseHTTPRequestHandler):
+    """Responde 200 OK para o health-check do Render e o ping do UptimeRobot."""
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Porquim Pessoal vivo! \xf0\x9f\x90\xb7")
+
+    def log_message(self, *args):  # silencia o log de cada ping
+        pass
+
+
+def iniciar_keepalive():
+    """Sobe um mini-servidor HTTP numa thread separada (porta exigida pelo Render)."""
+    porta = int(os.getenv("PORT", "8080"))
+    servidor = HTTPServer(("0.0.0.0", porta), _HealthHandler)
+    threading.Thread(target=servidor.serve_forever, daemon=True).start()
+    log.info("Keep-alive ouvindo na porta %s", porta)
+
+
 def main():
     init_db()
+    iniciar_keepalive()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ajuda", ajuda))
