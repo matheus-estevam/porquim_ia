@@ -185,12 +185,16 @@ def extrair_valor(texto: str):
 
 
 def detectar(texto: str, mapa) -> str | None:
+    """Retorna a chave cuja palavra-chave mais específica (mais longa) aparece no texto.
+    Assim "mercado livre" vence "mercado", evitando classificar Compras como Alimentação."""
     t = texto.lower()
-    for chave, palavras in (mapa.items() if isinstance(mapa, dict) else [(m, [m]) for m in mapa]):
+    itens = mapa.items() if isinstance(mapa, dict) else [(m, [m]) for m in mapa]
+    melhor_chave, melhor_tam = None, 0
+    for chave, palavras in itens:
         for p in palavras:
-            if p in t:
-                return chave
-    return None
+            if p in t and len(p) > melhor_tam:
+                melhor_chave, melhor_tam = chave, len(p)
+    return melhor_chave
 
 
 def parse_regex(texto: str) -> dict | None:
@@ -213,7 +217,7 @@ def parse_com_gemini(texto: str) -> dict | None:
     import json
     import google.generativeai as genai
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.5-flash")
     prompt = (
         "Extraia informações de gasto da mensagem e responda APENAS em JSON válido, sem texto extra:\n"
         '{"valor": float, "categoria": str, "meio": str, "descricao": str}\n'
