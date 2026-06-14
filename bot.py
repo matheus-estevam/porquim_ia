@@ -47,6 +47,8 @@ if not TOKEN:
 DB_PATH = Path(__file__).parent / "financas.db"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")   # Postgres (Neon) em produção; SQLite local se vazio
+if DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.strip().strip('"').strip("'")  # remove aspas/espaços coladas por engano
 USA_PG = bool(DATABASE_URL)
 PH = "%s" if USA_PG else "?"               # placeholder do driver (Postgres usa %s, SQLite usa ?)
 
