@@ -26,6 +26,13 @@ import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+FUSO_BR = ZoneInfo("America/Sao_Paulo")    # servidor roda em UTC; gravamos no horário de Brasília
+
+
+def agora_br() -> datetime:
+    return datetime.now(FUSO_BR)
 
 from dotenv import load_dotenv
 
@@ -135,7 +142,7 @@ def init_db() -> None:
 
 def salvar_gasto(user_id, descricao, categoria, meio, valor) -> str:
     codigo = uuid.uuid4().hex[:6]
-    agora = datetime.now()
+    agora = agora_br()
     con = conectar()
     cur = con.cursor()
     cur.execute(
@@ -150,7 +157,7 @@ def salvar_gasto(user_id, descricao, categoria, meio, valor) -> str:
 
 
 def relatorio_mes(user_id):
-    mes = datetime.now().strftime("%m/%Y")
+    mes = agora_br().strftime("%m/%Y")
     con = conectar()
     cur = con.cursor()
     cur.execute(
@@ -279,7 +286,7 @@ async def registrar(update: Update, _: ContextTypes.DEFAULT_TYPE):
         f"{emoji} {dados['descricao']} ({dados['categoria']})\n"
         f"💰 R$ {dados['valor']:.2f}".replace(".", ",") + "\n"
         f"💳 {dados['meio']}\n"
-        f"📅 {datetime.now():%d/%m/%Y} — #{codigo}",
+        f"📅 {agora_br():%d/%m/%Y} — #{codigo}",
         parse_mode="Markdown",
     )
 
@@ -295,7 +302,7 @@ async def relatorio(update: Update, _: ContextTypes.DEFAULT_TYPE):
         for cat, val in linhas
     )
     await update.message.reply_text(
-        f"📊 *Relatório de {datetime.now():%m/%Y}*\n\n{corpo}\n\n"
+        f"📊 *Relatório de {agora_br():%m/%Y}*\n\n{corpo}\n\n"
         f"💵 *Total: R$ {total:.2f}*".replace(".", ","),
         parse_mode="Markdown",
     )
